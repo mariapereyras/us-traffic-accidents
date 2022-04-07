@@ -1,0 +1,833 @@
+---
+title: "Statistical Analysis of US Traffic Accidents from 2017 to 2019"
+author: "ANTONIO REYBOL, DAIANA VEGA, ESMERALDA HOXHA, MARIA PEREYRA"
+date: "12/20/2020"
+output: html_document
+---
+
+*We chose to submit a HTML document for our analysis* 
+
+
+```{r setup, message = FALSE, include = FALSE}
+library(readxl)
+library(tidyverse)
+library(randomForest)
+library(scales)
+library(rpart)
+library(rpart.plot)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(clv)
+library(scales) 
+library(RColorBrewer)
+library(modelr)
+library(caret)
+library(lubridate)
+library(ISLR)
+library(tinytex)
+
+
+##We imported our dataset into R and filtered out the rows of data from the years that weren't complete and kept only the years of 2017-2019.
+us_accidents <- read_csv("accidents.csv")
+us_accidents <- us_accidents %>% filter(Start_Time <= '2019-12-31')
+us_accidents <- us_accidents %>% filter(Start_Time >= '2017-01-01')
+arrange(us_accidents, Start_Time) 
+
+##We removed columns from the dataset that we did not find useful for the analysis that we wanted to conduct for traffic accidents.
+us_accidents <- select(us_accidents, -Source, -Description, -Number, -Street, -Country, -Timezone, 
+                       -Weather_Timestamp, -Side, -Airport_Code, -Bump, -Sunrise_Sunset, -Civil_Twilight, 
+                       -Nautical_Twilight, -Astronomical_Twilight, -Start_Lat, -Start_Lng, -End_Lat,  -End_Lng, -TMC, -`Wind_Chill(F)`)
+
+##Cleaning up the data, converting times into a simple format and rearranging columns
+us_accidents$Date <- format(as.Date(us_accidents$`Start_Time`,"%Y-%m-%d"), format = "%d/%m/%Y")
+us_accidents$Year <- format(as.Date(us_accidents$`Start_Time`,"%Y-%m-%d"), format = "%Y")
+
+
+us_accidents <- us_accidents %>% relocate(Date, .after = Severity)
+us_accidents <- us_accidents %>% relocate(Year, .after = Date) 
+
+us_accidents$S_Time <- format(us_accidents$Start_Time,"%H")
+us_accidents$E_Time <- format(us_accidents$End_Time,"%H:%M")
+
+us_accidents <- us_accidents %>% mutate(Duration = End_Time - Start_Time)
+
+us_accidents <- us_accidents %>% tidyr::separate(Duration, c("Seconds"),extra='drop')
+
+us_accidents <- us_accidents %>% mutate ( Duration = as.numeric(Seconds) / 60 )
+
+##Creating a column for Seasons to use later in our analysis
+months <- as.numeric(format(as.Date(us_accidents$Date, '%m/%d/%Y'), '%m'))
+indx <- setNames( rep(c('winter', 'spring', 'summer',
+                        'fall'),each=3), c(12,1:11))
+us_accidents$Season <- unname(indx[as.character(months)])
+
+#Creating a new dataset, us_accidents1, with no NA values to allow us to use complete rows of data in our analysis
+us_accidents1 <- us_accidents %>% drop_na()
+us_accidents1
+
+## We also created a new data set to work with, Us_Accidents1, where we limit NA values, making the datas et smaller and allowing us to work with entirely complete rows of data moving forward. 
+
+```
+
+
+
+
+
+# Introduction
+
+Throughout the world, roads are shared by cars, buses, trucks, motorcycles, mopeds, pedestrians, animals, taxis, and other travelers. Travel made possible by motor vehicles supports economic and social development in many countries. However, each year, vehicles are involved in accidents and crashes that can be a result of a plethora of reasons. In the United States, especially in major states and cities, we always hear of constant accidents happening and traffic issues throughout all hours of the day. We started to wonder, why all the accidents? What causes so much traffic accidents in the country? 
+
+Given our initial curiosity, we chose to analyze a countrywide traffic accident data set that covers 49 states of the USA. The traffic accidents data set had collected traffic accidents in the USA from February 2016 to June 2020, capturing more than 3.5 million rows of data, using two APIs that provide streaming traffic incident (or event) data. These APIs broadcast traffic data captured by a variety of entities, such as the US and state departments of transportation, law enforcement agencies, traffic cameras, and traffic sensors within the road-networks. 
+
+
+
+
+
+# Hypothesis
+
+* **Null hypothesis** = There is no relationship between road accidents and various weather and road conditions
+* **Alternative hypothesis** = There is a relationship between road accidents and weather and road conditions.
+ 
+We begun this project with a descriptive analysis of the total USA road accidents, figuring out which variables had the biggest impacts on traffic accidents in America. We chose to first look into the seasons, months, times and locations (state) where most of the accidents occurred under, and then we conducted a Random Forest Model for the two states with the most traffic accidents, California and Texas. After we tested the variable importance for each, we continued with the multi-linear models to test our hypothesis of the relationships between the road accidents and other independent variable included in the models.
+
+
+
+
+
+# Analysis
+
+First, we wanted to investigate if one season had more accidents than another, given that we were expecting to see most of the accidents in the Fall or Winter. We created a Seasons column by defining respective months as Fall, Winter, Summer and Spring. However, when we plotted the accidents by season, we learned that though the Fall season did have the most accidents in the country across all years, it wasn't as significant as we would have hoped. We initially may have thought it would be the Winter season given the infamous bad weather conditions, but considering that the entire country does not experience the same weather conditions across the seasons, we understood why this result was not significant.
+
+
+
+```{r, echo = FALSE, message = FALSE, out.width = "65%"}
+
+us_accidents %>% drop_na() %>%
+  select(Season) %>%
+  group_by(Season) %>%
+  summarise(Accident_Count = sum(duplicated(Season))) %>%
+  arrange(desc(Accident_Count)) %>%
+  ggplot(aes(x=Season, y=Accident_Count)) + 
+  geom_col(fill= "pink") +
+  scale_y_continuous(labels = comma) +
+  ggtitle("Total Accidents by Season Across America") +
+  xlab("Season")+
+  ylab("Accident COunt")+
+  theme(axis.text = element_text(size = 10))+
+  theme(axis.title = element_text(size = 10))
+
+```
+
+
+After learning that our initial prediction for most traffic accidents happening in the colder seasons was not entirely significant, we wanted to expand our analysis to verify the seasons data by seeing exactly which months had the highest accidents across 2017-2019. When doing so, we found out that the late Fall/Winter month had the most accidents, which correlates with the seasons data. However, because the entire country does not experience the same kind of winter, we decided to take a different approach.
+
+
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, out.width = "65%"}
+
+us_accidents$Month <- format(as.Date(us_accidents$`Start_Time`,"%Y-%m-%d"), format = "%m")
+us_accidents %>% drop_na() %>%
+  select(Month) %>%
+  group_by(Month) %>%
+  summarise(Accident_Count = sum(duplicated(Month))) %>%
+  arrange(desc(Accident_Count)) %>%
+  ggplot(aes(x=Month, y=Accident_Count, width = .5)) +
+  geom_col(fill= "red") +
+  scale_y_continuous(labels = comma) +
+  ggtitle("Total Accidents by Month among 2017 - 2019") +
+  xlab("Month")+
+  ylab("Accident Count")+
+  theme(axis.text = element_text(size = 10))+
+  theme(axis.title = element_text(size = 10))
+
+```
+
+
+We plotted a bar graph to show at what times of the day were most of the traffic accidents happening across the country. Naturally, what we learned is that most accidents happened during rush hour times, 7-8 am and 4-6 pm, when drivers are going to and from work. This makes sense given that during rush hour times is when most of the vehicles are on the road, simultaneously. However, knowing the times that most traffic accidents occur did not explain the reason behind their occurrence. 
+
+
+
+``` {r, echo = FALSE, warning = FALSE, message = FALSE, out.width = "65%"}
+
+max_time = select(mutate(us_accidents, AccidentHour=substr(Start_Time,12,13)), AccidentHour,Start_Time,End_Time)
+max_time %>%
+  select(AccidentHour) %>%
+  group_by(AccidentHour) %>%
+  summarise(AvgAccidents=sum(duplicated(AccidentHour))) %>%
+  arrange(desc(AccidentHour)) %>%
+  ggplot(aes(x=AccidentHour, y=AvgAccidents, width = .8)) +
+  geom_col(fill ="blue") +
+  scale_y_continuous(labels = comma) +
+  ggtitle("Total Accidents by Hour") +
+  xlab("Hour of Day")+
+  ylab("Accident Count")+
+  theme(axis.text = element_text(size = 10))+
+  theme(axis.title = element_text(size = 10))
+
+```
+
+
+To continue our analysis to test whether or not weather and road conditions had an impact on traffic accidents, we continued to analyze where exactly most of the traffic accidents were happening in the country within 2017 through 2019. We plotted the number of accidents per state and we learned that California soared high, resulting in being the top state in the USA that had the most accidents in 2017-2019, with Texas ranking in second places. 
+
+
+
+```{r, echo = FALSE, message = FALSE, fig.width = 20}
+
+us_accidents %>%
+  select(State) %>%
+  group_by(State) %>%
+  summarise(Accident_Count = sum(duplicated(State))) %>%
+  arrange(desc(Accident_Count)) %>%
+  ggplot(aes(x= reorder(State, -Accident_Count), y=Accident_Count, width = .5)) + 
+  geom_col(fill= "blue") +
+  scale_y_continuous(labels = comma) +
+  ggtitle("Total Number of Accidents by State") +
+  xlab("State Name")+
+  ylab("Accident Count")+
+  theme(axis.text = element_text(size = 15))+
+  theme(axis.title = element_text(size = 15))
+
+```
+
+
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, include = FALSE}
+
+## Making categorical data factors to use for our analysis later.
+
+us_accidents$Weather_Condition = as.factor(us_accidents$Weather_Condition)
+
+us_accidents1$Weather_Condition = as.factor(us_accidents1$Weather_Condition)
+
+us_accidents1$Date <- as.Date(us_accidents1$Date, "%d/%m/%Y")
+
+
+```
+
+
+```{r, warning = FALSE, message = FALSE, include = FALSE}
+
+## Filtering to get only rows of data for counties in CA
+
+us_accidents_CA <- filter(us_accidents1, State == "CA")
+
+
+## Getting Frequency of categorical data for CA
+
+most_freq_weather_CA <- table(us_accidents_CA$Weather_Condition, useNA = "ifany")%>%
+  sort( decreasing = TRUE)%>%
+  head(15)
+
+```
+
+
+We continued our analysis on the traffic accidents in California. We first had to clean up our data set by filtering to work with only rows pertaining to the state of California, and finding the means of the columns in our data set. We wantes to work with the top weather condition variables respective to each state, like Cloudy or Rainy, for the state, as well as the top variables of road elements, like being near a traffic signal or a stop sign.
+
+We plotted the most frequent weather variables in California to get a better look at the weather conditions that existed during the time of most of California's traffic accidents between 2017 - 2019. From this plot, we see that most accidents in California happened on "Fair" days, with there not being such bad weather conditions as we initially expected. Because most of the accidents in California seemed to have happened without the impact of a bad weather condition, we decided to keep investigating to figure out which variables are behind the accidents in California.
+
+
+```{R, echo = FALSE}
+plot(most_freq_weather_CA)
+
+```
+
+
+
+```{r, include = FALSE}
+
+##Cleaning up and setting up our dataset respective to California to allow us to further investigate the most important variables causing traffic accidents.
+
+
+## Filtering the data among weather condition types; can use for CA
+
+us_accidents_CA <- filter(us_accidents_CA, Weather_Condition == "Fair" |
+                            Weather_Condition == "Cloudy" |
+                            Weather_Condition == "Partly Cloudy" |
+                            Weather_Condition == "Mostly Cloudy" |
+                            Weather_Condition == "Light Rain" |
+                            Weather_Condition == "Overcast" |
+                            Weather_Condition == "Haze" |
+                            Weather_Condition == "Rain" |
+                            Weather_Condition == "Fog" |
+                            Weather_Condition == "Heavy Rain" |
+                            Weather_Condition == "Fair / Windy" |
+                            Weather_Condition == "Smoke" |
+                            Weather_Condition == "Clear" |
+                            Weather_Condition == "Scattered Clouds" |
+                            Weather_Condition == "Partly Cloudy / Windy")
+
+
+## Getting the count of accidents AND mean of other variable by hour per day for CA
+
+CA_group <- us_accidents_CA %>% group_by(County,Date, S_Time)
+
+
+overall_accidents_info_CA <- summarise(CA_group,
+                                       Accident_Count = n(),
+                                       Visibility_Mean = mean(`Visibility(mi)`),
+                                       Temperature_Mean = mean(`Temperature(F)`),
+                                       Humidity_Mean = mean(`Humidity(%)`),
+                                       Pressure_Mean = mean(`Pressure(in)`),
+                                       Wind_Speed_Mean = mean(`Wind_Speed(mph)`),
+                                       Precipitation = mean(`Precipitation(in)`))
+
+
+
+## Pivot Wider for CA
+
+CA_df <- us_accidents_CA %>% mutate(dummy = 1) %>% pivot_wider(names_from = Weather_Condition, values_from = dummy, values_fill = 0) %>%
+  group_by(County,Date,S_Time) %>% summarise(
+    Fair = mean(Fair),
+    Cloudy = mean(Cloudy),
+    `Partly Cloudy` = mean(`Partly Cloudy`),
+    `Mostly Cloudy` = mean(`Mostly Cloudy`),
+    `Light Rain` = mean(`Light Rain`),
+    Overcast = mean(Overcast),
+    Haze = mean(Haze),
+    Fog = mean(Fog),
+    `Heavy Rain` = mean(`Heavy Rain`),
+    `Fair / Windy` = mean(`Fair / Windy`),
+    Smoke = mean(Smoke),
+    Clear = mean(Clear),
+    Scattered_Clouds = mean(`Scattered Clouds`),
+    `Partly Cloudy / Windy` = mean(`Partly Cloudy / Windy`))
+
+
+
+## Inner Join numerical data with categorical data for CA
+
+overall_accidents_info_CA <- overall_accidents_info_CA %>% inner_join(CA_df, by = c("County", "Date", "S_Time"))
+
+
+
+## Getting Mean of Logicals for CA
+
+CA_group2 <- us_accidents_CA %>% group_by(County,Date, S_Time)
+
+
+
+overall_accidents_info_CA2 <- summarise(CA_group2,
+                                        Amenity_Mean = mean(`Amenity`),
+                                        Crossing_Mean = mean(`Crossing`),
+                                        Junction_Mean = mean(`Junction`),
+                                        No_Exit_Mean = mean(`No_Exit`),
+                                        Railway_Mean = mean(`Railway`),
+                                        Roundabout_Mean = mean(`Roundabout`),
+                                        Station_Mean = mean(`Station`),
+                                        Stop_Mean = mean(`Stop`),
+                                        Traffic_Calming_Mean = mean(`Traffic_Calming`),
+                                        Traffic_Signal_Mean = mean(`Traffic_Signal`))
+
+
+
+## Final Inner Join that includes all means among data types for CA
+
+CA_overall_accidents_info <- overall_accidents_info_CA %>% inner_join(overall_accidents_info_CA2, by = c("County", "Date", "S_Time"))
+
+```
+
+
+
+```{r, warning = FALSE, message = FALSE, include = FALSE}
+
+##Similarly to how we begun constructing a new table to allow us to further investigate California and its accident-causing variables, we applied the same methods to the state of Texas, using the weather and road variables that stood out for Texas, which slightly differed from California's.
+
+us_accidents_TX <- filter(us_accidents1, State == "TX")
+
+
+
+## Getting Frequency of categorical data for TX
+
+most_freq_weather_TX <- table(us_accidents_TX$Weather_Condition, useNA = "ifany")%>%
+  sort( decreasing = TRUE)%>%
+  head(15)
+```
+
+
+Similarly to how we foud the most frequent weather conditions that happened in California at the time of most of its traffic accidents, we wanted to learn the same for Texas. Among plotting this data, we learned that like California, most of the traffic accidents in Texas also occured on "Fair" days. This also does not allow us to confirm our prediction that most traffic accidents were happening on bad weather conditions, which meant that we had to continue expanding our investigation to discover which variables have the most impact on traffic accidents in the country.
+
+
+```{r, echo = FALSE}
+plot(most_freq_weather_TX)
+```
+
+
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, include = FALSE}
+## Filtering the data for most frequent weather condition types for Texas
+
+us_accidents_TX <- filter(us_accidents_TX, 
+                     Weather_Condition == "Fair" |
+                       Weather_Condition == "Mostly Cloudy" |
+                       Weather_Condition == "Partly Cloudy" |
+                       Weather_Condition == "Cloudy" |
+                       Weather_Condition == "Light Rain" |
+                       Weather_Condition == "Overcast" |
+                       Weather_Condition == "Rain" |
+                       Weather_Condition == "Light Drizzle" |
+                       Weather_Condition == "Fog" |
+                       Weather_Condition == "Heavy Rain" |
+                       Weather_Condition == "Light Thunderstorms and Rain" |
+                       Weather_Condition == "Haze" |
+                       Weather_Condition == "Light Rain with Thunder" |
+                       Weather_Condition == "Heavy Thunderstorms and Rain" |
+                       Weather_Condition == "Thunderstorms and Rain" |
+                       Weather_Condition == "Partly Cloudy / Windy") 
+
+
+## Getting the count of accidents AND mean of other variable by hour per day for TX
+
+TX_group <- us_accidents_TX %>% group_by(County,Date, S_Time)
+
+
+
+overall_accidents_info_TX <- summarise(TX_group,
+                                       Accident_Count = n(),
+                                       Visibility_Mean = mean(`Visibility(mi)`),
+                                       Temperature_Mean = mean(`Temperature(F)`),
+                                       Humidity_Mean = mean(`Humidity(%)`),
+                                       Pressure_Mean = mean(`Pressure(in)`),
+                                       Wind_Speed_Mean = mean(`Wind_Speed(mph)`),
+                                       Precipitation = mean(`Precipitation(in)`))
+
+
+##Pivot Wider for TX
+
+TX_df <- us_accidents_TX %>% mutate(dummy = 1) %>% pivot_wider(names_from = Weather_Condition, values_from = dummy, values_fill = 0) %>%
+  group_by(County,Date,S_Time) %>% summarise(
+    Fair = mean(Fair),
+    `Mostly Cloudy` = mean(`Mostly Cloudy`),
+    `Partly Cloudy` = mean(`Partly Cloudy`),
+    Cloudy = mean(Cloudy),
+    `Light Rain` = mean(`Light Rain`),
+    Overcast = mean(Overcast),
+    Rain = mean(Rain),
+    `Light Drizzle` = mean(`Light Drizzle`),
+    Fog = mean(Fog),
+    `Heavy Rain` = mean(`Heavy Rain`),
+    `Light Thunderstorms and Rain` = mean(`Light Thunderstorms and Rain`),
+    Haze = mean(Haze),
+    `Light Rain with Thunder` = mean(`Light Rain with Thunder`),
+    `Heavy Thunderstorms and Rain` = mean(`Heavy Thunderstorms and Rain`),
+    `Thunderstorms and Rain` = mean(`Thunderstorms and Rain`),
+    `Partly Cloudy / Windy` = mean(`Partly Cloudy / Windy`))
+
+
+## Inner Join numerical data with categorical data for TX
+
+overall_accidents_info_TX <- overall_accidents_info_TX %>% inner_join(TX_df, by = c("County", "Date", "S_Time"))
+
+
+
+## Getting Mean of Logicals for TX
+
+TX_group2 <- us_accidents_TX %>% group_by(County,Date, S_Time)
+
+
+overall_accidents_info_TX2 <- summarise(TX_group2,
+                                        Amenity_Mean = mean(`Amenity`),
+                                        Crossing_Mean = mean(`Crossing`),
+                                        Junction_Mean = mean(`Junction`),
+                                        No_Exit_Mean = mean(`No_Exit`),
+                                        Railway_Mean = mean(`Railway`),
+                                        Roundabout_Mean = mean(`Roundabout`),
+                                        Station_Mean = mean(`Station`),
+                                        Stop_Mean = mean(`Stop`),
+                                        Traffic_Calming_Mean = mean(`Traffic_Calming`),
+                                        Traffic_Signal_Mean = mean(`Traffic_Signal`))
+
+## Final Inner Join that includes all means among data types for TX
+
+TX_overall_accidents_info <- overall_accidents_info_TX %>% inner_join(overall_accidents_info_TX2, by = c("County", "Date", "S_Time"))
+
+
+```
+
+
+``` {r, echo = FALSE, warning = FALSE, message = FALSE, include = FALSE}
+
+colnames(CA_overall_accidents_info)[colnames(CA_overall_accidents_info) %in% 
+                                      c("Partly Cloudy", "Mostly Cloudy", "Light Rain", "Heavy Rain", "Fair / Windy", "Partly Cloudy / Windy")] <- c("Partly_Cloudy","Mostly_Cloudy", "Light_Rain", "Heavy_Rain", "Fair_Windy", "Partly_Cloudy_Windy")
+
+
+colnames(TX_overall_accidents_info)[colnames(TX_overall_accidents_info) %in% 
+                                      c("Mostly Cloudy","Partly Cloudy", "Light Rain", "Light Drizzle", "Heavy Rain", "Light Thunderstorms and Rain", "Light Rain with Thunder", "Heavy Thunderstorms and Rain", "Thunderstorms and Rain", "Partly Cloudy / Windy")] <- c("Mostly_Cloudy","Partly_Cloudy", "Light_Rain", "Light_Drizzle", "Heavy_Rain", "Light_Thunderstorms_Rain", "Light_Rain_Thunder", "Heavy_Thunderstorms_Rain", "Thunderstorms_Rain", "Partly_Cloudy_Windy")
+```
+
+
+``` {r, echo = FALSE, warning = FALSE, message = FALSE, include = FALSE}
+
+## Sampling the data:
+data_set_sizeCA = floor(nrow(CA_overall_accidents_info) * .80)
+indexCA <- sample(1:nrow(CA_overall_accidents_info), size = data_set_sizeCA)
+trainingCA <- CA_overall_accidents_info[indexCA,]
+testingCA <- CA_overall_accidents_info[-indexCA,]
+
+
+## Sampling the data for Texas
+data_set_sizeTX = floor(nrow(TX_overall_accidents_info) * .80)
+indexTX <- sample(1:nrow(TX_overall_accidents_info), size = data_set_sizeTX)
+trainingTX <- TX_overall_accidents_info[indexTX,]
+testingTX <- TX_overall_accidents_info[-indexTX,]
+
+```
+
+
+
+# ADVANCED ANALYSIS FOR CALIFORNIA
+
+In order to continue expanding our analysis to figure out which were the most important variables that seemed to cause the most traffic accidents in California between 2017 - 2019, we conducted a Random Forest model as well as applying a regression tree to the variables from the data. 
+
+To begin our modeling, we split our data between a training and test set, where each one contains 80% and 20% of the data, respectively. 
+
+We wanted our random forest to be its best and most accurate version, so we found the mtry value for California which was 33, and we applied that to our random forest model.
+
+
+
+```{r, warning = FALSE, message = FALSE, include = FALSE}
+##-----------------------------------------------------------------------------------------------------------------------
+##--------------REGRESSION TREE AND RANDOM FOREST FOR CALIFORNIA ------------------------------------------------------------------
+##-----------------------------------------------------------------------------------------------------------------------
+
+## Regression tree:
+CA_tree <- rpart(Accident_Count ~ ., data = trainingCA , control = rpart.control(cp = 0.01))
+
+## Examination of the most important variables:
+##summary(CA_tree)
+
+## Finding the best mtry value for the best random forest
+## mtryCA <- tuneRF(trainingCA[-1], trainingCA$Accident_Count, ntreeTry= 400, stepFactor = 1.5, improve = 0.01, trace = TRUE, plot = TRUE)
+## Best.mCA <- mtry[mtry[,2] == min (mtry[,2]),1]
+## print(est.mCA) = 33
+
+## Random Forest with BEST mtry value:
+set.seed(123)
+BestRandomForestCA <- randomForest(Accident_Count ~ .,data = trainingCA, mtry = 33, importance = TRUE, ntree = 400, do.trace = 10)
+
+## Variable Importance to find out which variables play an important role in the model
+importance(BestRandomForestCA)
+varUsed(BestRandomForestCA)
+
+```
+
+
+
+```{r, echo = FALSE}
+## Plotting the decision tree
+##rpart.plot(CA_tree)
+
+rpart.plot(CA_tree)
+
+##prp(CA_tree, faclen = 2)
+##plotcp(CA_tree)  --> We ran the above code to visualize cross-validation results.
+
+rmse(CA_tree ,testingCA) ##2.03
+
+```
+
+
+From this regression tree, we observed that even when given all the variables to evaluate the tree, it only chose the variables: county, junction, date and start time as these are the variables where the splits happen. 
+
+We could see how the tree started by partitioning the data by county in CA with junction means of >< or = 0.04166 to >< or = 0.9285. It followed by splitting the data by county in CA with a date >< or = 18141.5 and s_time = 00 to 24 and it kept splitting the data by county in CA depending on their junction mean, date and s_time. Junction means, date and start times seemed to have a high importance as variables impacting traffic accidents in California.
+
+Our regression tree had a RSME score of ~2.03.
+
+
+```{r, echo = FALSE}
+
+## Plotting the BEST random forest for CA. This plot shows the error and the number of trees.
+plot(BestRandomForestCA)
+
+```
+
+
+We ran an initial random forest with the recommended standard 500 trees. However, in this model, we found that the data had 11 splits and a percentage-var-explained of 82.75%. After getting the OOB error, we noticed that the out-of-bag error initially drops down and then, becomes more or less constant. So, we are not able to improve this error after about 400 trees. We found the best mtry value and decided to run a new random forest with the new mtry value of 33 for California and an nTree value of 400.
+
+
+
+``` {r, echo = FALSE}
+
+## No. of nodes for the trees:
+hist(treesize(BestRandomForestCA),
+     main= "No. of nodes for the Random Forest",
+     col = "green")
+```
+
+
+With this histogram, we get to see the distribution of number on nodes in each of those 400 trees that we have and in fact, the biggest bar is close to 8500. There are more than 80 trees that contain slightly over 8400 nodes in them. 
+
+Also, there are a few trees with close to 8000 nodes and there a few trees which have more than 9000.
+
+
+```{r, echo = FALSE}
+
+## Plotting the most important variables for CA
+varImpPlot(BestRandomForestCA,
+           sort = T ,
+           n.var = 15 ,
+           main = "Top 15 - Variable Importance for California",
+           col = "blue" )
+```
+
+
+For California, we used the varImpPlot function to allow us to see which variables from the data set seemed to truly have the biggest impact on the traffic accidents happening. Running the varImpPlot and selecting the top 15 variables with the highest impact, we saw that being near Junctions and Traffic Signals had high impacts, as well as the Visibility on the specific day. Naturally, the variable County ranked very high as well.
+
+Given the variables shown, it did seem that road conditions and weather conditions have an influence on traffic accidents after all, at least in California, with location and time playing a huge part as well.
+
+
+```{r, echo = FALSE}
+
+## Residuals plot
+trainingCA %>% add_residuals(BestRandomForestCA) %>%
+  ggplot(aes(x = resid)) + geom_histogram() + xlab('Residuals') + ylab('Count') + ggtitle('Residuals of the Best Random Forest for California')
+
+RMSE
+rmse(BestRandomForestCA,testingCA) ##1.36
+
+```
+
+
+We also wanted to prove just how accurate our random forest model was, and how well it fit our data. We plotted the residuals as well, and we see from this graph that though not perfect, since it doesn't entirely equal to 0, it is a normally distributed graph. This meant that our model did accurate fit our data, scoring a RMSE value of ~1.36.
+
+
+
+
+# ADVANCED ANALYSIS FOR TEXAS
+
+Continuing to expand our analysis to see why Texas ranked the second highest state in the country with the most traffic accidents, by figuring out which were the most important variables, we conducted a similar analysis process to the one we used for California, by conductinga  Random Forest model as well as applying a regression tree to the variables from the data. 
+
+We split our data between a training and test set, where each one contains 80% and 20% of the data, respectively. 
+
+We wanted our random forest to be its best and most accurate version, so we found the mtry value for Texas which was 35, and we applied that to our random forest model.
+
+
+
+```{r, warning = FALSE, message = FALSE, include = FALSE}
+##-----------------------------------------------------------------------------------------------------------------------
+##--------------RREGRESSION TREE AND RANDOM FOREST FOR TEXAS---------------------------------------------------------
+##-----------------------------------------------------------------------------------------------------------------------
+
+## Regression tree:
+TX_tree <- rpart(Accident_Count ~ ., data = trainingTX , control = rpart.control(cp = 0.01))
+
+## Examination of the most important variables:
+##summary(TX_tree)
+
+## Finding the best mtry value for the best random forest
+## mtryTX <- tuneRF(trainingTX[-1], trainingTX$Accident_Count, ntreeTry= 400, stepFactor = 1.5, improve = 0.01, trace = TRUE, plot = TRUE)
+## Best.mTX <- mtry[mtry[,2] == min (mtry[,2]),1]
+## print(Best.mTX) = 35
+
+## Random Forest with BEST mtry value:
+set.seed(123)
+BestRandomForestTX <- randomForest(Accident_Count ~ .,data = trainingTX, mtry= 35, importance = TRUE, ntree = 400, do.trace = 10)
+
+## Variable Importance to find out which variables play an important role in the model
+importance(BestRandomForestTX)
+varUsed(BestRandomForestTX)
+
+```
+
+
+```{r, echo = FALSE}
+## Plotting the regression tree:
+rpart.plot(TX_tree)
+##plotcp(TX_tree) ##visualize cross-validation results
+```
+
+From this regression tree, we can observe that even when given all the variables to evaluate the tree, it only chose the variables: crossing mean, s_time and traffic signal mean as these were the variables where the splits happen. We can observe how the tree started by partitioning the data by crossing mean <0.0238 and continued by splitting by the traffic signal mean <0.03125 or >=0.03125, it follows by splitting the data by traffic signal mean >=0.4807 and crossing mean of >=0.0238, it keeps splitting the data by crossing mean, traffic signal mean and s_time.
+
+
+```{r, echo = FALSE}
+
+plot(BestRandomForestTX) ##this plot shows the error and the number of trees.
+```
+
+
+For Texas, we ran an initial random forest with the recommended standard 500 trees,where we had 11 splits and a percentage-var-explained of 83.66%. After getting the OOB error, we noticed that the out-of-bag error initially drops down and becomes more or less constant. We are not able to improve this error after about 400 trees. We found the best mtry value and decided to run a new random forest with the new mtry value of 35 for Texas and an nTree value of 400. The new percentage-var-explained is 84.66%, which is higher than the previous.
+
+
+```{r, echo = FALSE}
+
+## No. of nodes for the trees:
+hist(treesize(BestRandomForestTX),
+     main= "No. of nodes for the Random Forest",
+     col = "green")
+```
+
+
+On the histogram above, we get to see the distribution of number on nodes in each of 400 trees that we have and the biggest bar is close to 2800. There are more then 80 trees that contain around 2800 nodes in them. Also there are a few trees with close to 2500 nodes and there a few trees which have around 3000.
+
+
+```{r, echo = FALSE}
+
+## Seeing which variables are most important for Texas
+varImpPlot(BestRandomForestTX,
+           sort = T ,
+           n.var = 15 ,
+           main = "Top 15 - Variable Importance for Texas",
+           col = "blue" )
+
+```
+
+
+Similarly to how we found the top variables for California, we applied the same method of using the varImpPlot function to allow us to see which variables from the data set seemed to truly have the biggest impact on the traffic accidents happening in Texas. Running the varImpPlot and selecting the top 15 variables with the highest impact, we saw that being near Traffic Signals and Crossings were varibles of great influence for traffic accidents, as well as a proximity to Junctions, similar to California. 
+
+Given the variables shown, we discover that road conditions had the most influence on traffic accidents in Texas, even more so that in California. For Texas, 4 of it's top 5 variables were factors of road condition. 
+
+
+
+```{r, echo = FALSE}
+
+## Residuals plot
+trainingTX %>% add_residuals(BestRandomForestTX) %>%
+  ggplot(aes(x = resid)) + geom_histogram() + xlab('Residuals') + ylab('Count') + ggtitle('Residuals of the Best Random Forest for Texas')
+
+
+## RMSE
+rmse(BestRandomForestTX,testingTX) ##0.74
+```
+
+We wanted to tet just how well our random forest model for Texas was, and how well it fit this data. We plotted the residuals as well here, and we see from this graph that though not perfect either, it seems to still be very accurate, scoring a RMSE value of ~0.74, much lower than the previous, making this model even more accurate and closely-fitting to our data. 
+
+
+# Running a Multi-Linear Model for California
+
+
+```{r, include = FALSE}
+##Multi Linear Model for CA - Top 5 variables identified as important
+ML_CA <- lm(`Accident_Count` ~ `Junction_Mean` + `Traffic_Signal_Mean` + `County` + `Date` + `Visibility_Mean`, data = trainingCA)
+```
+
+
+```{r, echo = FALSE}
+
+summary(ML_CA)
+
+```
+
+Our p-value of the F-statistic is <2.2e-16, which is conveys a high significance. This means that, at least, one of the predictor variables is significantly related to the outcome variable, we will analize this further by seeing the coefficients table which shows the estimates of regession beta coefficients and the associated t-static p-values.
+
+
+```{r, echo = FALSE}
+
+summary(ML_CA)$coefficient
+
+```
+
+Looking at the above summary, changes in Traffic_Signal_Mean and Date are significantly associated to changes in the Accident count, while changes in the County and Visibility_Mean are not as significant with the total number of accidents. Therefore, we have removed all the variables, but Traffic_Signal_Mean and Date to produce a better model.
+
+# Running a Multi-Linear Model for California
+
+```{r, include = FALSE}
+ML_CA2 <- lm(`Accident_Count` ~ `Traffic_Signal_Mean` + `Date`, data = trainingCA)
+```
+
+The confidence interval of the model can be extracted as follows:
+
+```{r, echo = FALSE}
+
+summary(ML_CA2)
+confint(ML_CA2)
+```
+
+By obtaining the RMSE of both the models and comparing them we can confirm that one is better than the other. In our case, the RMSE of model MC_CA2 is higher than our model MC_CA. Therefore, our model ML_CA2 is better than ML_CA.
+
+
+```{r, echo = FALSE}
+
+##Residuals
+plot(trainingCA$Accident_Count, residuals(ML_CA))
+plot(trainingCA$Accident_Count, residuals(ML_CA2))
+
+
+
+##RMSE
+
+rmse(ML_CA, data=testingCA)##2.81
+rmse(ML_CA2,data=testingCA)##3.16
+
+```
+
+When we initially ran the model with all variables, we saw that the residuals were more spread out. When running the model with only the most significant variables, the residuals are closer to eachother.
+
+Our models ML_CA and ML_CA2 score RMSE values of 2.75 and 3.15, respectively.
+
+
+
+# Running a Multi-Linear Model for Texas
+
+
+```{r, include = FALSE}
+## Multi - Linear Model for Texas
+
+LinearModelTX <- lm (Accident_Count ~ Traffic_Signal_Mean + Junction_Mean + Mostly_Cloudy + Crossing_Mean + Light_Rain, data = trainingTX )
+
+```
+
+
+```{r, echo = FALSE}
+summary(LinearModelTX)
+```
+
+Our p-value of the F-statistic is <2.2e-16, which is highly significant. this means that, at least, one of the predictor variables is significantly related to the outcome variable, we will analyze this 
+##further by seeing the coefficients table, which shows the estimate of regression beta coefficients and the associated t-static p-values.
+
+
+
+``` {r, include = FALSE}
+summary(LinearModelTX)$coefficient
+```
+
+It can be seen that, changes in Traffic_Signal and Light rain are significantly associated to changes in the Accident count, while changes in the Junction, weather type: mostly cloudy and light rain are not significantly associated with the accidents count. 
+
+
+
+```{r, include = FALSE}
+LinearModelTX1 <- lm(Accident_Count ~ Traffic_Signal_Mean + Crossing_Mean, data = trainingTX)
+```
+
+As the junction mean and weather conditions:mostly cloudy and light rain variables are not significant, it is possible to remove them from the model. We see the summary, below.
+
+```{r, echo = FALSE}
+summary(LinearModelTX1)
+```
+
+
+```{r, include = FALSE}
+## The confidence interval of the model can be extracted as follows:
+confint(LinearModelTX1)
+
+```
+
+```{r, echo = FALSE}
+##Residuals:
+plot(trainingTX$Accident_Count, residuals(LinearModelTX))
+plot(trainingTX$Accident_Count, residuals(LinearModelTX1))
+
+ 
+
+##RMSE
+rmse(LinearModelTX, data=testingTX)##2.76
+rmse(LinearModelTX1,data=testingTX)##2.76
+
+```
+
+When we initially ran the model with all variables, we saw that the residuals were more spread out. When running the model with only the most significant variables, the residuals are closer to each other here, as well.
+
+Our models LinearModelTX and LinearModelTX1 both score RMSE values of 2.76.
+
+
+# Conclusions
+
+* **Statistical conclusions for California:**
+From our model we observed that the p-value is statistically significant, p-value < 2.2e-16. 
+This means the p-value is a lot less than 0.05, which means we have sufficient evidence to reject the null hypothesis that β = 0. Hence, there is a significant relationship between the variables and accidents in the multi-linear regression model.
+
+ 
+
+* **Statistical conclusions for Texas:**
+From our model we observed that p-value is statistically significant, p-value < 2.2e-16 . This means the p-value is a lot less than 0.05, which means we have sufficient evidence to reject the null hypothesis that β = 0. 
+Hence, there is a significant relationship between the variables and accidents in the multilinear regression model.
+
