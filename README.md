@@ -1,7 +1,7 @@
 
-#Statistical Analysis of US Traffic Accidents from 2017 to 2019
+# Statistical Analysis of US Traffic Accidents from 2017 to 2019
 
-###Maria Pereyra & Group
+### Maria Pereyra & Group
 
 ### Introduction
 
