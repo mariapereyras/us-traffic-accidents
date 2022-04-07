@@ -1,6 +1,4 @@
 
-##group members:
-##Maria Pereyra, Antonio Reybol Jr, Daiana Vega, Esmeralda Hoxha
 
 install.packages("readxl")
 library(readxl)
