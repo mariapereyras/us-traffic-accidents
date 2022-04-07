@@ -384,7 +384,7 @@ When we initially ran the model with all variables, we saw that the residuals we
 
 Our models LinearModelTX and LinearModelTX1 both score RMSE values of 2.76.
 
-# Conclusions
+### Conclusions
 
 -   **Statistical conclusions for California:** From our model we  observed that the p-value is statistically significant, p-value \<2.2e-16. This means the p-value is a lot less than 0.05, which means we have sufficient evidence to reject the null hypothesis that β= 0. Hence, there is a significant relationship between the variables and accidents in the multi-linear regression model.
 
